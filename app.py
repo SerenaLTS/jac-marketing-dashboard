@@ -17,23 +17,32 @@ st.markdown('<div class="hero"><h1>Paid Performance report</h1><p>JAC Motors · 
 
 with st.sidebar:
     st.header('Report data')
-    uploads = st.file_uploader('Upload META / Google reports', type=['csv'], accept_multiple_files=True)
-    st.caption('Upload the latest export per platform. Uploads replace local data for this session and are not saved or shared.')
+    meta_upload = st.file_uploader('Upload META report', type=['csv'], key='meta-upload')
+    google_upload = st.file_uploader('Upload Google report', type=['csv'], key='google-upload')
+    st.caption('Upload one latest export per platform. Each upload replaces only that platform’s local report for this session. Uploads are not saved or shared.')
     st.download_button('Download daily agency template', ','.join(TEMPLATE_COLUMNS)+'\n', 'agency_daily_template.csv', 'text/csv')
 
 # Prefer the latest supplied reports; never append the overlapping older META export.
 root = Path(__file__).parent
-local = [root / name for name in ['Meta -Campaigns-3-Oct-2026-1-Nov-2026.csv', 'Google Report - Oct.csv'] if (root/name).exists()]
-if not local:
-    local = list(root.glob('JAC-Motors-Campaigns-*.csv'))[:1]
-inputs = [(f.name, f.getvalue()) for f in uploads] if uploads else [(f.name, f.read_bytes()) for f in local]
+meta_local = root / 'Meta -Campaigns-3-Oct-2026-1-Nov-2026.csv'
+if not meta_local.exists():
+    meta_local = next(root.glob('JAC-Motors-Campaigns-*.csv'), None)
+google_local = root / 'Google Report - Oct.csv'
+inputs = []
+for platform, upload, local in [('META', meta_upload, meta_local), ('Google Ads', google_upload, google_local)]:
+    if upload is not None:
+        inputs.append((platform, upload.name, upload.getvalue()))
+    elif local is not None and local.exists():
+        inputs.append((platform, local.name, local.read_bytes()))
 if not inputs:
     st.info('Upload the META and Google raw CSV reports to begin. Business data is not stored in the code repository.')
     st.stop()
 frames = []
-for name, content in inputs:
+for platform, name, content in inputs:
     try:
         part = load_data(content)
+        if not part.empty and not part['Channel'].eq(platform).all():
+            raise ValueError(f'Please upload a {platform} report in this upload field.')
         part['Source file'] = name
         frames.append(part)
     except (ValueError, UnicodeError, KeyError, pd.errors.ParserError) as exc:
@@ -46,7 +55,7 @@ for _, group in df.groupby('Campaign key'):
     ordered = group.sort_values('Reporting starts')
     if (ordered['Reporting starts'].iloc[1:].reset_index(drop=True) <= ordered['Reporting ends'].iloc[:-1].reset_index(drop=True)).any():
         st.error('Overlapping exports detected. Upload only one export per platform.'); st.stop()
-st.caption('Sources: ' + ' · '.join(name for name, _ in inputs))
+st.caption('Sources: ' + ' · '.join(f'{platform}: {name}' for platform, name, _ in inputs))
 st.subheader('Channel overview · supplied reporting periods')
 st.info('META and Google reporting periods do not align. Figures below describe each supplied period; there is no combined-period total. TikTok data has not been supplied.')
 summary = []
