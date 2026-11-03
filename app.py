@@ -2,7 +2,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from metrics import load_data, totals, previous_week, TEMPLATE_COLUMNS
+from metrics import load_data, totals, previous_week, TEMPLATE_COLUMNS, outcome_summary
 
 st.set_page_config(page_title='Paid Performance | JAC Motors', page_icon='📊', layout='wide')
 st.markdown('''<style>
@@ -17,83 +17,108 @@ st.markdown('<div class="hero"><h1>Paid Performance report</h1><p>JAC Motors · 
 
 with st.sidebar:
     st.header('Report data')
-    upload = st.file_uploader('Upload campaign CSV', type=['csv'])
-    st.caption('Accepts the original META export or the daily cross-channel template. Upload replaces sample data for this session; uploads are not saved for other viewers or future sessions.')
-    st.download_button('Download agency CSV template', ','.join(TEMPLATE_COLUMNS)+'\n', 'agency_daily_template.csv', 'text/csv')
+    uploads = st.file_uploader('Upload META / Google reports', type=['csv'], accept_multiple_files=True)
+    st.caption('Upload the latest export per platform. Uploads replace local data for this session and are not saved or shared.')
+    st.download_button('Download daily agency template', ','.join(TEMPLATE_COLUMNS)+'\n', 'agency_daily_template.csv', 'text/csv')
 
-files = sorted(Path(__file__).parent.glob('*.csv'))
-if upload is None and not files:
-    st.info('Upload a META CSV to begin.')
+# Prefer the latest supplied reports; never append the overlapping older META export.
+root = Path(__file__).parent
+local = [root / name for name in ['Meta -Campaigns-3-Oct-2026-1-Nov-2026.csv', 'Google Report - Oct.csv'] if (root/name).exists()]
+if not local:
+    local = list(root.glob('JAC-Motors-Campaigns-*.csv'))[:1]
+inputs = [(f.name, f.getvalue()) for f in uploads] if uploads else [(f.name, f.read_bytes()) for f in local]
+if not inputs:
+    st.info('Upload the META and Google raw CSV reports to begin. Business data is not stored in the code repository.')
     st.stop()
-try:
-    df = load_data(upload.getvalue() if upload else files[0].read_bytes())
-except (ValueError, pd.errors.ParserError) as exc:
-    st.error(str(exc))
-    st.stop()
+frames = []
+for name, content in inputs:
+    try:
+        part = load_data(content)
+        part['Source file'] = name
+        frames.append(part)
+    except (ValueError, UnicodeError, KeyError, pd.errors.ParserError) as exc:
+        st.error(f'{name}: {exc}')
+        st.stop()
+df = pd.concat(frames, ignore_index=True)
 if df.empty:
-    st.info('The CSV contains no report rows.')
-    st.stop()
-source = upload.name if upload else files[0].name
-st.caption(f"Source: {source} · Data through {df['Reporting ends'].max():%d %b %Y} · Reporting intervals, not daily data")
+    st.info('No report rows found.'); st.stop()
+for _, group in df.groupby('Campaign key'):
+    ordered = group.sort_values('Reporting starts')
+    if (ordered['Reporting starts'].iloc[1:].reset_index(drop=True) <= ordered['Reporting ends'].iloc[:-1].reset_index(drop=True)).any():
+        st.error('Overlapping exports detected. Upload only one export per platform.'); st.stop()
+st.caption('Sources: ' + ' · '.join(name for name, _ in inputs))
+st.subheader('Channel overview · supplied reporting periods')
+st.info('META and Google reporting periods do not align. Figures below describe each supplied period; there is no combined-period total. TikTok data has not been supplied.')
+summary = []
+for channel, group in df.groupby('Channel'):
+    values = totals(group)
+    summary.append({'Channel':channel, 'From':group['Reporting starts'].min().date(),
+                    'To':group['Reporting ends'].max().date(), 'Campaigns':group['Campaign key'].nunique(),
+                    'Spend (AUD)':values['Spend (AUD)'], 'Impressions':values['Impressions'],
+                    'Clicks¹':values['Link clicks'], 'CPC (AUD)':values['CPC (AUD)'],
+                    'CTR (%)':values['CTR (%)'], **outcome_summary(group)})
+st.dataframe(pd.DataFrame(summary), hide_index=True, width='stretch')
+st.caption('¹ META uses link clicks; Google uses exported Clicks. Outcomes are platform-reported and are not deduplicated customers. META cost per outcome uses LeadGen campaign spend only. Google Ads includes Search and Demand Gen; campaign type is not supplied on each campaign row.')
 
-periods = df[['Reporting starts', 'Reporting ends']].drop_duplicates().sort_values('Reporting starts')
-complete = periods[(periods['Reporting ends'] - periods['Reporting starts']).dt.days == 6]
-default = complete.iloc[-1] if not complete.empty else periods.iloc[-1]
-default_start = default.iloc[0].date()
-if (df['Reporting starts'] == df['Reporting ends']).all():
-    default_start = max(df['Reporting starts'].min().date(), default.iloc[1].date()-pd.Timedelta(days=6))
-c1, c2 = st.columns([2, 3])
-with c1:
-    dates = st.date_input('Reporting date range', (default_start, default.iloc[1].date()),
-                          min_value=df['Reporting starts'].min().date(), max_value=df['Reporting ends'].max().date())
-with c2:
-    campaigns = st.multiselect('Campaign', sorted(df['Campaign name'].unique()), default=sorted(df['Campaign name'].unique()))
-st.caption('Only complete source intervals inside the date range are included. Dates within an interval cannot be split or prorated.')
-if len(dates) != 2:
-    st.info('Select a start and end date.'); st.stop()
-scope = df[df['Campaign name'].isin(campaigns)]
-current = scope[(scope['Reporting starts'] >= pd.Timestamp(dates[0])) & (scope['Reporting ends'] <= pd.Timestamp(dates[1]))]
-if current.empty:
-    st.info('No full reporting intervals match these filters. Expand the date range.'); st.stop()
-m = totals(current)
-prior = previous_week(scope, current)
-st.subheader('Overview · WoW')
-if prior is None:
-    st.info('WoW unavailable: select one 7-day interval with a matching prior week and the same campaign coverage.')
-else:
-    start = current['Reporting starts'].min()
-    st.caption(f"Comparing {start:%d %b}–{current['Reporting ends'].max():%d %b %Y} with {start-pd.Timedelta(days=7):%d %b}–{start-pd.Timedelta(days=1):%d %b %Y}. Arrows show direction, not performance against a target.")
-keys = ['Link clicks', 'CPM (AUD)', 'Spend (AUD)', 'CPC (AUD)', 'Landing page views', 'CTR (%)']
-for col, key in zip(st.columns(6), keys):
-    value = m[key]
-    display = 'N/A' if value is None else (f'{value:.2f}%' if key == 'CTR (%)' else f'${value:,.2f}' if 'AUD' in key else f'{value:,.0f}')
-    delta = f'{(value/prior[key]-1)*100:+.1f}%' if prior and value is not None and prior[key] not in (None, 0) else None
-    col.metric(key, display, delta, delta_color='off')
-st.caption('Leads, lead conversion rate, revenue and target CPA: not provided. Landing page views are not leads.')
-
-trend = pd.DataFrame([{'Period': f'{a:%d %b}–{b:%d %b}', **totals(g)} for (a,b),g in current.groupby(['Reporting starts','Reporting ends'])])
-def chart(frame, x, y, title, color='#71bbd3', kind='line'):
+def chart(frame, x, y, title, kind='bar'):
     fig = (px.bar if kind == 'bar' else px.line)(frame, x=x, y=y, title=title)
-    fig.update_traces(marker_color=color, **({'line_color': color, 'mode':'lines+markers'} if kind == 'line' else {}))
-    fig.update_layout(height=280, paper_bgcolor='white', plot_bgcolor='white', margin=dict(l=15,r=15,t=50,b=20), title_font_size=16)
+    fig.update_traces(marker_color='#71bbd3')
+    fig.update_layout(height=290, paper_bgcolor='white', plot_bgcolor='white', margin=dict(l=15,r=15,t=50,b=20), title_font_size=16)
     st.plotly_chart(fig, width='stretch')
-for col, key in zip(st.columns(3), ['Spend (AUD)', 'Link clicks', 'Landing page views']):
-    with col: chart(trend, 'Period', key, f'{key} by report interval')
-st.subheader('Channel Overview')
-table = pd.DataFrame([{'Channel':channel, 'Availability':'Provided' if not (g := current[current['Channel']==channel]).empty else 'Not provided',
-                       **(totals(g) if not g.empty else {})} for channel in ['META','TikTok','SEM']])
-st.dataframe(table, hide_index=True, width='stretch', column_config={k:st.column_config.NumberColumn(k, format='%.2f') for k in m})
-metric = st.selectbox('Channel chart metric', list(m), index=0)
-for col, channel in zip(st.columns(3), ['TikTok','META','SEM']):
-    with col:
-        channel_rows = current[current['Channel']==channel]
-        if not channel_rows.empty:
-            channel_trend = pd.DataFrame([{'Period': f'{a:%d %b}–{b:%d %b}', **totals(g)} for (a,b),g in channel_rows.groupby(['Reporting starts','Reporting ends'])])
-            chart(channel_trend, 'Period', metric, channel, kind='bar')
+
+def display(value, key):
+    if value is None or pd.isna(value): return 'N/A'
+    if '(AUD)' in key: return f'${value:,.2f}'
+    if '(%)' in key: return f'{value:.2f}%'
+    return f'{value:,.0f}'
+
+channels = sorted(df['Channel'].unique())
+for tab, channel in zip(st.tabs(channels), channels):
+    with tab:
+        data = df[df['Channel']==channel]
+        st.subheader(channel)
+        c1, c2 = st.columns(2)
+        with c1:
+            selected = st.multiselect('Campaigns', sorted(data['Campaign name'].unique()), default=sorted(data['Campaign name'].unique()), key=f'campaign-{channel}')
+        scope = data[data['Campaign name'].isin(selected)]
+        periods = data[['Reporting starts','Reporting ends']].drop_duplicates().sort_values('Reporting starts')
+        options = ['All supplied periods'] + [f'{a:%d %b %Y} – {b:%d %b %Y}' for a,b in periods.itertuples(index=False, name=None)]
+        with c2:
+            period = st.selectbox('Reporting interval', options, key=f'period-{channel}')
+        current = scope
+        if period != options[0]:
+            pair = periods.iloc[options.index(period)-1]
+            current = scope[(scope['Reporting starts']==pair.iloc[0]) & (scope['Reporting ends']==pair.iloc[1])]
+        if current.empty:
+            st.info('No campaigns selected.'); continue
+        st.caption(f"Actual coverage: {current['Reporting starts'].min():%d %b %Y} – {current['Reporting ends'].max():%d %b %Y}. Source intervals cannot be split into daily values.")
+        m = totals(current)
+        prior = previous_week(scope, current)
+        if prior is None:
+            st.caption('WoW unavailable for this selection. Choose a complete seven-day interval with a matching prior week. Google currently contains only one week.')
         else:
-            st.markdown(f'#### {channel}')
-            st.info('No data provided')
-with st.expander('Campaign detail & metric definitions'):
-    st.dataframe(current, hide_index=True, width='stretch')
-    st.markdown('CPC = spend ÷ link clicks. CPM = spend ÷ impressions × 1,000. CTR = link clicks ÷ impressions × 100. Cost / LPV = spend ÷ landing page views. Rates are recomputed from totals; zero denominators display N/A. Reach is not summed across periods. META attribution settings remain visible in the source detail; channels may use different attribution methods.')
-    st.download_button('Download filtered source rows', current.to_csv(index=False).encode(), 'filtered_meta.csv', 'text/csv')
+            st.caption('WoW compares the selected complete week with the immediately preceding week for the same campaigns. Arrows show direction, not target performance.')
+        keys = ['Spend (AUD)', 'Impressions', 'Link clicks', 'CPC (AUD)', 'CPM (AUD)', 'CTR (%)']
+        for col,key in zip(st.columns(6), keys):
+            value = m[key]
+            delta = f'{(value/prior[key]-1)*100:+.1f}%' if prior and value is not None and prior[key] not in (None,0) else None
+            col.metric('Clicks' if channel=='Google Ads' and key=='Link clicks' else key, display(value,key), delta, delta_color='off')
+        outcomes = outcome_summary(current)
+        a,b,c = st.columns(3)
+        a.metric(outcomes['Outcome'], f"{outcomes['Reported outcomes']:,.2f}" if outcomes['Reported outcomes'] is not None else 'N/A')
+        b.metric('Cost / reported outcome', display(outcomes['Cost / outcome (AUD)'], '(AUD)'))
+        c.metric('Landing page views', display(m['Landing page views'], 'count'))
+        if channel == 'META':
+            st.caption('Results are separated by indicator: instant-form leads are counted only from actions:leadgen.other. Prospecting Results are landing page views. Blank lead metrics for other objectives do not establish zero leads.')
+        elif channel == 'Google Ads':
+            st.caption('Conversions are preserved as decimal platform-attributed values, not rounded to people. Conversion actions and attribution settings were not supplied. Exported Conv. rate is shown only in raw detail because its denominator is not available. Landing page views are unavailable.')
+        trend = pd.DataFrame([{'Period':f'{a:%d %b}–{b:%d %b}', **totals(g)} for (a,b),g in current.groupby(['Reporting starts','Reporting ends'])])
+        for col,key in zip(st.columns(3), ['Spend (AUD)','Link clicks','CPC (AUD)']):
+            with col: chart(trend,'Period',key, key + ' by source interval')
+        st.markdown('#### Campaign performance')
+        campaign_table = pd.DataFrame([{'Campaign':name, **totals(g), **outcome_summary(g)} for name,g in current.groupby('Campaign name')])
+        st.dataframe(campaign_table, hide_index=True, width='stretch')
+        with st.expander('Raw report rows and definitions'):
+            st.dataframe(current, hide_index=True, width='stretch')
+            st.markdown('CPC = spend ÷ clicks. CPM = spend ÷ impressions × 1,000. CTR = clicks ÷ impressions × 100. Cost / LPV = spend ÷ measured landing page views. Zero denominators show N/A. Reach is not summed. Google total/subtotal rows are excluded to prevent double counting. Budget is the exported configured budget, not an agreed CPA target. Revenue, CRM lead quality and target CPA are unavailable.')
+            st.download_button('Download filtered rows', current.to_csv(index=False).encode(), f'{channel}_filtered.csv', 'text/csv', key=f'download-{channel}')

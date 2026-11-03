@@ -1,11 +1,13 @@
 import unittest
 from pathlib import Path
-from metrics import load_data, totals, previous_week, TEMPLATE_COLUMNS
+from metrics import load_data, totals, previous_week, TEMPLATE_COLUMNS, outcome_summary
 import pandas as pd
 
 class MetricsTest(unittest.TestCase):
     def setUp(self):
-        self.df = load_data(next(Path(__file__).parent.glob('*.csv')).read_bytes())
+        if not (Path(__file__).parent / 'JAC-Motors-Campaigns-29-Sep-2026-28-Oct-2026.csv').exists():
+            self.skipTest('Local source CSV is intentionally not committed')
+        self.df = load_data((Path(__file__).parent / 'JAC-Motors-Campaigns-29-Sep-2026-28-Oct-2026.csv').read_bytes())
 
     def test_source_reconciliation(self):
         self.assertEqual(len(self.df), 5)
@@ -44,6 +46,30 @@ class MetricsTest(unittest.TestCase):
         raw.loc[0, 'spend'] = None
         with self.assertRaisesRegex(ValueError, 'cannot be blank'):
             load_data(raw.to_csv(index=False).encode())
+
+class NewReportsTest(unittest.TestCase):
+    def test_google_totals_excluded(self):
+        path = Path(__file__).parent / 'Google Report - Oct.csv'
+        if not path.exists(): self.skipTest('Local source report')
+        df = load_data(path.read_bytes())
+        self.assertEqual(len(df), 84)
+        self.assertAlmostEqual(totals(df)['Spend (AUD)'],7421)
+        self.assertEqual(totals(df)['Link clicks'],7885)
+        self.assertIsNone(totals(df)['Landing page views'])
+        self.assertAlmostEqual(outcome_summary(df)['Reported outcomes'],38.99)
+        self.assertIsNone(previous_week(df,df))
+
+    def test_meta_outcome_separation(self):
+        path = Path(__file__).parent / 'Meta -Campaigns-3-Oct-2026-1-Nov-2026.csv'
+        if not path.exists(): self.skipTest('Local source report')
+        df = load_data(path.read_bytes())
+        self.assertEqual(len(df),15)
+        self.assertAlmostEqual(totals(df)['Spend (AUD)'],3219.8)
+        outcome = outcome_summary(df)
+        self.assertEqual(outcome['Reported outcomes'],35)
+        self.assertAlmostEqual(outcome['Outcome campaign spend (AUD)'],920.88)
+        week = df[df['Reporting starts']==pd.Timestamp('2026-10-24')]
+        self.assertAlmostEqual(previous_week(df,week)['Spend (AUD)'],518.33)
 
 if __name__ == '__main__':
     unittest.main()

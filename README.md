@@ -2,6 +2,14 @@
 
 Local Streamlit dashboard based on the supplied META CSV and report reference.
 
+## Current agency-report view
+
+Supports multi-file uploads of the native META campaign CSV and Google Ads UTF-16 tab-separated report (`.csv`). The latest local META and Google reports are preferred over the older overlapping META extract. Source CSVs remain excluded from Git; hosted viewers must upload their reports.
+
+Channel overview shows each platform's own reporting coverage, with no misleading combined-period total. Google Ads is kept as Google Ads because its export includes Search and Demand Gen without a per-campaign type column. All Google total/subtotal rows are excluded. META `actions:leadgen.other` results are counted separately from landing page views; lead cost uses only the matching LeadGen campaign spend. Google conversions retain decimal attribution. Conversion definitions, timezone and Google attribution settings remain unconfirmed. Exported Google conversion rate is available in raw detail only because its denominator is not supplied.
+
+Each channel has campaign and source-interval filters, comparable-week deltas when available, source-interval charts, campaign summaries and downloadable detail. Google currently has one week, so Google WoW is unavailable. No CPA target, daily allocation or revenue is inferred.
+
 ```sh
 python3 -m pip install -r requirements.txt
 python3 -m streamlit run app.py
