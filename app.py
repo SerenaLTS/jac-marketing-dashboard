@@ -2,7 +2,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from metrics import load_data, totals, previous_week, TEMPLATE_COLUMNS, outcome_summary
+from metrics import load_data, totals, previous_week, outcome_summary
 
 st.set_page_config(page_title='Paid Performance | JAC Motors', page_icon='📊', layout='wide')
 st.markdown('''<style>
@@ -20,7 +20,6 @@ with st.sidebar:
     meta_upload = st.file_uploader('Upload META report', type=['csv'], key='meta-upload')
     google_upload = st.file_uploader('Upload Google report', type=['csv'], key='google-upload')
     st.caption('Upload one latest export per platform. Each upload replaces only that platform’s local report for this session. Uploads are not saved or shared.')
-    st.download_button('Download daily agency template', ','.join(TEMPLATE_COLUMNS)+'\n', 'agency_daily_template.csv', 'text/csv')
 
 # Prefer the latest supplied reports; never append the overlapping older META export.
 root = Path(__file__).parent
