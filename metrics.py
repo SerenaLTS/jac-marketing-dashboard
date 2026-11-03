@@ -6,7 +6,9 @@ TEMPLATE_COLUMNS = ['date', 'channel', 'campaign_id', 'campaign_name', 'currency
                     'spend', 'impressions', 'link_clicks', 'landing_page_views', 'leads',
                     'conversion_definition', 'attribution_window', 'extracted_at']
 
-def load_data(content: bytes) -> pd.DataFrame:
+def load_data(content: bytes, filename: str = '') -> pd.DataFrame:
+    if content.startswith(b'PK'):
+        return load_tiktok(content, filename)
     if content.startswith((b'\xff\xfe', b'\xfe\xff')):
         return load_google(content)
     df = pd.read_csv(BytesIO(content), dtype={'campaign_id': str}).dropna(how='all')
@@ -120,6 +122,12 @@ def load_google(content):
 
 
 def outcome_summary(df):
+    if df['Channel'].eq('TikTok').all():
+        count = float(df['TikTok conversions'].sum())
+        spend = float(df[COUNTS[0]].sum())
+        return {'Outcome':'TikTok conversions', 'Reported outcomes':count,
+                'Outcome campaign spend (AUD)':spend,
+                'Cost / outcome (AUD)':spend/count if count else None}
     if df['Channel'].eq('Google Ads').all():
         conversions = float(df['Google conversions'].sum())
         return {'Outcome': 'Google conversions', 'Reported outcomes': conversions,
@@ -134,3 +142,36 @@ def outcome_summary(df):
                     'Outcome campaign spend (AUD)':spend,
                     'Cost / outcome (AUD)':spend/count if count else None}
     return {'Outcome':'Not provided', 'Reported outcomes':None, 'Cost / outcome (AUD)':None}
+
+
+def load_tiktok(content, filename):
+    import re
+    match = re.search(r'(\d{8})-(\d{8})', filename)
+    if not match:
+        raise ValueError('TikTok filename must include its reporting dates: YYYYMMDD-YYYYMMDD.xlsx.')
+    start, end = [pd.to_datetime(x, format='%Y%m%d', errors='raise') for x in match.groups()]
+    if end < start:
+        raise ValueError('TikTok reporting end precedes start.')
+    df = pd.read_excel(BytesIO(content), engine='openpyxl').dropna(how='all')
+    required = ['Campaign name','Ad group name','Ad name','Spend','Impressions','Clicks (destination)','Conversions','Currency']
+    missing = set(required) - set(df.columns)
+    if missing:
+        raise ValueError('Missing TikTok columns: ' + ', '.join(sorted(missing)))
+    df = df[~df['Campaign name'].astype(str).str.match(r'(?i)^total\b')].copy()
+    if df[required].isna().any().any():
+        raise ValueError('Required TikTok fields cannot be blank.')
+    if not df['Currency'].eq('AUD').all():
+        raise ValueError('TikTok report must use AUD.')
+    for source, target in [('Spend',COUNTS[0]),('Impressions',COUNTS[1]),('Clicks (destination)',COUNTS[2]),('Conversions','TikTok conversions')]:
+        df[target] = pd.to_numeric(df[source].astype(str).str.replace(',', '', regex=False), errors='raise')
+        if (df[target] < 0).any():
+            raise ValueError('Negative TikTok metric values.')
+    if df.duplicated(['Campaign name','Ad group name','Ad name']).any():
+        raise ValueError('Duplicate TikTok ad rows.')
+    df['Reporting starts'], df['Reporting ends'] = start, end
+    df['Date source'] = 'Reporting range from filename'
+    df['Landing page views'] = float('nan')
+    df['Channel'] = 'TikTok'
+    # Preserve ad-level rows for detail, while display summaries group by campaign.
+    df['Campaign key'] = ['TikTok:' + str(i) + ':' + name for i, name in enumerate(df['Campaign name'])]
+    return df

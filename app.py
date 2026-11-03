@@ -19,6 +19,7 @@ with st.sidebar:
     st.header('Reports')
     meta_upload = st.file_uploader('Upload META report', type=['csv'], key='meta-upload')
     google_upload = st.file_uploader('Upload Google report', type=['csv'], key='google-upload')
+    tiktok_upload = st.file_uploader('Upload TikTok report', type=['xlsx'], key='tiktok-upload')
     st.caption('One file per channel · Uploads last this session only.')
 
 # Prefer the latest supplied reports; never append the overlapping older META export.
@@ -27,19 +28,20 @@ meta_local = root / 'Meta -Campaigns-3-Oct-2026-1-Nov-2026.csv'
 if not meta_local.exists():
     meta_local = next(root.glob('JAC-Motors-Campaigns-*.csv'), None)
 google_local = root / 'Google Report - Oct.csv'
+tiktok_local = next(root.glob('Tiktok*.xlsx'), None)
 inputs = []
-for platform, upload, local in [('META', meta_upload, meta_local), ('Google Ads', google_upload, google_local)]:
+for platform, upload, local in [('META', meta_upload, meta_local), ('Google Ads', google_upload, google_local), ('TikTok', tiktok_upload, tiktok_local)]:
     if upload is not None:
         inputs.append((platform, upload.name, upload.getvalue()))
     elif local is not None and local.exists():
         inputs.append((platform, local.name, local.read_bytes()))
 if not inputs:
-    st.info('Upload a META or Google report to begin.')
+    st.info('Upload a META, Google or TikTok report to begin.')
     st.stop()
 frames = []
 for platform, name, content in inputs:
     try:
-        part = load_data(content)
+        part = load_data(content, name)
         if not part.empty and not part['Channel'].eq(platform).all():
             raise ValueError(f'Please upload a {platform} report in this upload field.')
         part['Source file'] = name
@@ -60,7 +62,7 @@ summary = []
 for channel, group in df.groupby('Channel'):
     values = totals(group)
     summary.append({'Channel':channel, 'From':group['Reporting starts'].min().date(),
-                    'To':group['Reporting ends'].max().date(), 'Campaigns':group['Campaign key'].nunique(),
+                    'To':group['Reporting ends'].max().date(), 'Campaigns':group['Campaign name'].nunique(),
                     'Spend (AUD)':values['Spend (AUD)'], 'Impressions':values['Impressions'],
                     'Clicks':values['Link clicks'], 'CPC (AUD)':values['CPC (AUD)'],
                     'CTR (%)':values['CTR (%)']})
@@ -108,7 +110,7 @@ for tab, channel in zip(st.tabs(channels), channels):
             delta = f'{(value/prior[key]-1)*100:+.1f}%' if prior and value is not None and prior[key] not in (None,0) else None
             col.metric(label, display(value,key), delta, delta_color='off')
         count = outcomes['Reported outcomes']
-        cards[4].metric('Instant-form leads' if channel=='META' else 'Google conversions',
+        cards[4].metric('Instant-form leads' if channel=='META' else f'{channel.removesuffix(" Ads")} conversions',
                         ('N/A' if count is None else f'{count:,.0f}' if channel=='META' else f'{count:,.2f}'))
         cards[5].metric('LeadGen CPL' if channel=='META' else 'Cost / conversion', display(outcomes['Cost / outcome (AUD)'], '(AUD)'))
         trend = pd.DataFrame([{'Period':f'{a:%d %b}–{b:%d %b}', **totals(g)} for (a,b),g in current.groupby(['Reporting starts','Reporting ends'])])
@@ -121,7 +123,7 @@ for tab, channel in zip(st.tabs(channels), channels):
             campaign_rows.append({'Campaign':name, 'Impressions':values['Impressions'], 'Clicks':values['Link clicks'],
                                   'Cost (AUD)':values['Spend (AUD)'], 'CPC (AUD)':values['CPC (AUD)'],
                                   'CTR (%)':values['CTR (%)'],
-                                  'Instant-form leads' if channel=='META' else 'Google conversions':result['Reported outcomes']})
+                                  'Instant-form leads' if channel=='META' else f'{channel.removesuffix(" Ads")} conversions':result['Reported outcomes']})
         campaign_table = pd.DataFrame(campaign_rows).sort_values('Cost (AUD)', ascending=False)
         st.dataframe(campaign_table, hide_index=True, width='stretch')
         with st.expander('Report details'):
@@ -129,7 +131,9 @@ for tab, channel in zip(st.tabs(channels), channels):
             st.markdown('**Reporting:** Source intervals are not split or prorated. WoW requires matching seven-day periods and campaigns. Arrows show change, not target achievement. Uploads are session-only.')
             st.markdown('**META:** Clicks are link clicks. Only instant-form LeadGen results count as leads; Prospecting results are landing page views. LeadGen CPL uses LeadGen spend only. Blank lead values for other objectives mean unavailable.')
             st.markdown('**Google:** Includes Search and Demand Gen. Conversions are platform-attributed values, not a count of unique people. Conversion actions and attribution settings are unconfirmed. Exported conversion rate is retained below; its denominator was not supplied. Landing page views are unavailable.')
-            st.markdown('**Other data:** TikTok, revenue, lead quality and target CPA have not been supplied.')
+            if channel == 'TikTok':
+                st.markdown('**TikTok:** Ad-level Excel rows are grouped by campaign; the exported total row is excluded. Clicks are destination clicks. Reporting dates come from the YYYYMMDD-YYYYMMDD filename; keep that range accurate. Monthly data has no weekly breakdown. Conversions use the platform definition, which has not been confirmed as leads. Landing page views are unavailable.')
+            st.markdown('**Other data:** Revenue, lead quality and target CPA have not been supplied.')
             st.dataframe(current, hide_index=True, width='stretch')
             st.markdown('CPC = spend ÷ clicks. CPM = spend ÷ impressions × 1,000. CTR = clicks ÷ impressions × 100. Cost / LPV = spend ÷ measured landing page views. Zero denominators show N/A. Reach is not summed. Google total/subtotal rows are excluded to prevent double counting. Budget is the exported configured budget, not an agreed CPA target. Revenue, CRM lead quality and target CPA are unavailable.')
             st.download_button('Download filtered rows', current.to_csv(index=False).encode(), f'{channel}_filtered.csv', 'text/csv', key=f'download-{channel}')

@@ -2,5 +2,7 @@ __pycache__/
 .venv/
 .streamlit/secrets.toml
 *.csv
+*.xlsx
+*.xls
 !templates/agency_daily_template.csv
 .DS_Store
