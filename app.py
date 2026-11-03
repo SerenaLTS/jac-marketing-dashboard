@@ -7,19 +7,19 @@ from metrics import load_data, totals, previous_week, outcome_summary
 st.set_page_config(page_title='Paid Performance | JAC Motors', page_icon='📊', layout='wide')
 st.markdown('''<style>
 .stApp {background:#f4f5f7;color:#193e4b}
-.block-container {max-width:1450px;padding-top:2rem}
-.hero {background:#193f4c;color:white;padding:28px 32px;margin-bottom:22px;border-radius:6px}
-.hero h1 {font-size:30px;color:white;margin:0}.hero p {color:#c6dce2;margin:6px 0 0}
-[data-testid="stMetric"] {background:white;border:1px solid #e6eaed;border-radius:10px;padding:18px}
+.block-container {max-width:1380px;padding-top:1.5rem}
+.hero {background:#193f4c;color:white;padding:22px 28px;margin-bottom:20px;border-radius:6px}
+.hero h1 {font-size:27px;color:white;margin:0}.hero p {color:#c6dce2;margin:6px 0 0}
+[data-testid="stMetric"] {background:white;border:1px solid #e6eaed;border-radius:10px;padding:16px}
 [data-testid="stMetricLabel"] {color:#52656d}
 </style>''', unsafe_allow_html=True)
-st.markdown('<div class="hero"><h1>Paid Performance report</h1><p>JAC Motors · Agency campaign monitoring · AUD</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>Paid Performance report</h1><p>JAC Motors · AUD</p></div>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header('Report data')
+    st.header('Reports')
     meta_upload = st.file_uploader('Upload META report', type=['csv'], key='meta-upload')
     google_upload = st.file_uploader('Upload Google report', type=['csv'], key='google-upload')
-    st.caption('Upload one latest export per platform. Each upload replaces only that platform’s local report for this session. Uploads are not saved or shared.')
+    st.caption('One file per channel · Uploads last this session only.')
 
 # Prefer the latest supplied reports; never append the overlapping older META export.
 root = Path(__file__).parent
@@ -34,7 +34,7 @@ for platform, upload, local in [('META', meta_upload, meta_local), ('Google Ads'
     elif local is not None and local.exists():
         inputs.append((platform, local.name, local.read_bytes()))
 if not inputs:
-    st.info('Upload the META and Google raw CSV reports to begin. Business data is not stored in the code repository.')
+    st.info('Upload a META or Google report to begin.')
     st.stop()
 frames = []
 for platform, name, content in inputs:
@@ -54,19 +54,17 @@ for _, group in df.groupby('Campaign key'):
     ordered = group.sort_values('Reporting starts')
     if (ordered['Reporting starts'].iloc[1:].reset_index(drop=True) <= ordered['Reporting ends'].iloc[:-1].reset_index(drop=True)).any():
         st.error('Overlapping exports detected. Upload only one export per platform.'); st.stop()
-st.caption('Sources: ' + ' · '.join(f'{platform}: {name}' for platform, name, _ in inputs))
-st.subheader('Channel overview · supplied reporting periods')
-st.info('META and Google reporting periods do not align. Figures below describe each supplied period; there is no combined-period total. TikTok data has not been supplied.')
+st.subheader('Channel Overview')
+st.caption('Each channel shows its own reporting period. Outcomes use different platform definitions.')
 summary = []
 for channel, group in df.groupby('Channel'):
     values = totals(group)
     summary.append({'Channel':channel, 'From':group['Reporting starts'].min().date(),
                     'To':group['Reporting ends'].max().date(), 'Campaigns':group['Campaign key'].nunique(),
                     'Spend (AUD)':values['Spend (AUD)'], 'Impressions':values['Impressions'],
-                    'Clicks¹':values['Link clicks'], 'CPC (AUD)':values['CPC (AUD)'],
-                    'CTR (%)':values['CTR (%)'], **outcome_summary(group)})
+                    'Clicks':values['Link clicks'], 'CPC (AUD)':values['CPC (AUD)'],
+                    'CTR (%)':values['CTR (%)']})
 st.dataframe(pd.DataFrame(summary), hide_index=True, width='stretch')
-st.caption('¹ META uses link clicks; Google uses exported Clicks. Outcomes are platform-reported and are not deduplicated customers. META cost per outcome uses LeadGen campaign spend only. Google Ads includes Search and Demand Gen; campaign type is not supplied on each campaign row.')
 
 def chart(frame, x, y, title, kind='bar'):
     fig = (px.bar if kind == 'bar' else px.line)(frame, x=x, y=y, title=title)
@@ -84,49 +82,54 @@ channels = sorted(df['Channel'].unique())
 for tab, channel in zip(st.tabs(channels), channels):
     with tab:
         data = df[df['Channel']==channel]
-        st.subheader(channel)
+        st.subheader('Overview · WoW')
         c1, c2 = st.columns(2)
         with c1:
-            selected = st.multiselect('Campaigns', sorted(data['Campaign name'].unique()), default=sorted(data['Campaign name'].unique()), key=f'campaign-{channel}')
-        scope = data[data['Campaign name'].isin(selected)]
+            selected = st.multiselect('Campaigns', sorted(data['Campaign name'].unique()), default=[], placeholder='All campaigns', key=f'campaign-{channel}')
+        scope = data[data['Campaign name'].isin(selected)] if selected else data
         periods = data[['Reporting starts','Reporting ends']].drop_duplicates().sort_values('Reporting starts')
-        options = ['All supplied periods'] + [f'{a:%d %b %Y} – {b:%d %b %Y}' for a,b in periods.itertuples(index=False, name=None)]
+        options = ['All periods'] + [f'{a:%d %b %Y} – {b:%d %b %Y}' for a,b in periods.itertuples(index=False, name=None)]
         with c2:
-            period = st.selectbox('Reporting interval', options, key=f'period-{channel}')
+            period = st.selectbox('Date range', options, key=f'period-{channel}')
         current = scope
         if period != options[0]:
             pair = periods.iloc[options.index(period)-1]
             current = scope[(scope['Reporting starts']==pair.iloc[0]) & (scope['Reporting ends']==pair.iloc[1])]
         if current.empty:
             st.info('No campaigns selected.'); continue
-        st.caption(f"Actual coverage: {current['Reporting starts'].min():%d %b %Y} – {current['Reporting ends'].max():%d %b %Y}. Source intervals cannot be split into daily values.")
+        st.caption(f"Period: {current['Reporting starts'].min():%d %b %Y} – {current['Reporting ends'].max():%d %b %Y}")
         m = totals(current)
         prior = previous_week(scope, current)
-        if prior is None:
-            st.caption('WoW unavailable for this selection. Choose a complete seven-day interval with a matching prior week. Google currently contains only one week.')
-        else:
-            st.caption('WoW compares the selected complete week with the immediately preceding week for the same campaigns. Arrows show direction, not target performance.')
-        keys = ['Spend (AUD)', 'Impressions', 'Link clicks', 'CPC (AUD)', 'CPM (AUD)', 'CTR (%)']
-        for col,key in zip(st.columns(6), keys):
+        st.caption('vs previous week' if prior is not None else 'WoW — unavailable for this period')
+        outcomes = outcome_summary(current)
+        cards = st.columns(6)
+        for col,key,label in zip(cards[:4], ['Spend (AUD)', 'Link clicks', 'CPC (AUD)', 'CTR (%)'], ['Cost', 'Link clicks' if channel=='META' else 'Clicks', 'CPC', 'CTR']):
             value = m[key]
             delta = f'{(value/prior[key]-1)*100:+.1f}%' if prior and value is not None and prior[key] not in (None,0) else None
-            col.metric('Clicks' if channel=='Google Ads' and key=='Link clicks' else key, display(value,key), delta, delta_color='off')
-        outcomes = outcome_summary(current)
-        a,b,c = st.columns(3)
-        a.metric(outcomes['Outcome'], f"{outcomes['Reported outcomes']:,.2f}" if outcomes['Reported outcomes'] is not None else 'N/A')
-        b.metric('Cost / reported outcome', display(outcomes['Cost / outcome (AUD)'], '(AUD)'))
-        c.metric('Landing page views', display(m['Landing page views'], 'count'))
-        if channel == 'META':
-            st.caption('Results are separated by indicator: instant-form leads are counted only from actions:leadgen.other. Prospecting Results are landing page views. Blank lead metrics for other objectives do not establish zero leads.')
-        elif channel == 'Google Ads':
-            st.caption('Conversions are preserved as decimal platform-attributed values, not rounded to people. Conversion actions and attribution settings were not supplied. Exported Conv. rate is shown only in raw detail because its denominator is not available. Landing page views are unavailable.')
+            col.metric(label, display(value,key), delta, delta_color='off')
+        count = outcomes['Reported outcomes']
+        cards[4].metric('Instant-form leads' if channel=='META' else 'Google conversions',
+                        ('N/A' if count is None else f'{count:,.0f}' if channel=='META' else f'{count:,.2f}'))
+        cards[5].metric('LeadGen CPL' if channel=='META' else 'Cost / conversion', display(outcomes['Cost / outcome (AUD)'], '(AUD)'))
         trend = pd.DataFrame([{'Period':f'{a:%d %b}–{b:%d %b}', **totals(g)} for (a,b),g in current.groupby(['Reporting starts','Reporting ends'])])
         for col,key in zip(st.columns(3), ['Spend (AUD)','Link clicks','CPC (AUD)']):
-            with col: chart(trend,'Period',key, key + ' by source interval')
+            with col: chart(trend,'Period',key, {'Spend (AUD)':'Cost', 'Link clicks':'Link clicks' if channel=='META' else 'Clicks', 'CPC (AUD)':'CPC'}[key])
         st.markdown('#### Campaign performance')
-        campaign_table = pd.DataFrame([{'Campaign':name, **totals(g), **outcome_summary(g)} for name,g in current.groupby('Campaign name')])
+        campaign_rows = []
+        for name,g in current.groupby('Campaign name'):
+            values, result = totals(g), outcome_summary(g)
+            campaign_rows.append({'Campaign':name, 'Impressions':values['Impressions'], 'Clicks':values['Link clicks'],
+                                  'Cost (AUD)':values['Spend (AUD)'], 'CPC (AUD)':values['CPC (AUD)'],
+                                  'CTR (%)':values['CTR (%)'],
+                                  'Instant-form leads' if channel=='META' else 'Google conversions':result['Reported outcomes']})
+        campaign_table = pd.DataFrame(campaign_rows).sort_values('Cost (AUD)', ascending=False)
         st.dataframe(campaign_table, hide_index=True, width='stretch')
-        with st.expander('Raw report rows and definitions'):
+        with st.expander('Report details'):
+            st.caption('Sources: ' + ' · '.join(current['Source file'].unique()))
+            st.markdown('**Reporting:** Source intervals are not split or prorated. WoW requires matching seven-day periods and campaigns. Arrows show change, not target achievement. Uploads are session-only.')
+            st.markdown('**META:** Clicks are link clicks. Only instant-form LeadGen results count as leads; Prospecting results are landing page views. LeadGen CPL uses LeadGen spend only. Blank lead values for other objectives mean unavailable.')
+            st.markdown('**Google:** Includes Search and Demand Gen. Conversions are platform-attributed values, not a count of unique people. Conversion actions and attribution settings are unconfirmed. Exported conversion rate is retained below; its denominator was not supplied. Landing page views are unavailable.')
+            st.markdown('**Other data:** TikTok, revenue, lead quality and target CPA have not been supplied.')
             st.dataframe(current, hide_index=True, width='stretch')
             st.markdown('CPC = spend ÷ clicks. CPM = spend ÷ impressions × 1,000. CTR = clicks ÷ impressions × 100. Cost / LPV = spend ÷ measured landing page views. Zero denominators show N/A. Reach is not summed. Google total/subtotal rows are excluded to prevent double counting. Budget is the exported configured budget, not an agreed CPA target. Revenue, CRM lead quality and target CPA are unavailable.')
             st.download_button('Download filtered rows', current.to_csv(index=False).encode(), f'{channel}_filtered.csv', 'text/csv', key=f'download-{channel}')
